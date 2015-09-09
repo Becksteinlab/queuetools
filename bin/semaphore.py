@@ -1,0 +1,375 @@
+#!/usr/bin/env python
+
+"""Query and modify the current state of the resources available on a host.
+
+Subcommands:
+    *populate*
+        set host characteristics
+    *claim*
+        claim resources given
+    *avail*
+        get resources available
+    *used*
+        get resources in use
+    *clear*
+        clear resources in use by the given job id
+
+"""
+import argparse
+import fcntl
+import yaml
+
+class File(object):
+    """File object base class. Implements file locking and reloading methods.
+
+    """
+
+    def __init__(self, filename, logger=None, **kwargs):
+        """Create File instance for interacting with file on disk.
+
+        :Arguments:
+            *filename*
+                name of file on disk object corresponds to
+
+        """
+        self.filename = os.path.abspath(filename)
+        self.handle = None
+        self.fd = None
+        self.fdlock = None
+
+        self._start_logger(logger)
+
+        # we apply locks to a proxy file to avoid creating an HDF5 file
+        # without an exclusive lock on something; important for multiprocessing
+        proxy = "." + os.path.basename(self.filename) + ".proxy"
+        self.proxy = os.path.join(os.path.dirname(self.filename), proxy)
+        try:
+            fd = os.open(self.proxy, os.O_CREAT | os.O_EXCL)
+            os.close(fd)
+        except OSError:
+            pass
+
+    def get_location(self):
+        """Get File basedir.
+
+        :Returns:
+            *location*
+                absolute path to File basedir
+
+        """
+        return os.path.dirname(self.filename)
+
+    def _shlock(self, fd):
+        """Get shared lock on file.
+
+        Using fcntl.lockf, a shared lock on the file is obtained. If an
+        exclusive lock is already held on the file by another process,
+        then the method waits until it can obtain the lock.
+
+        :Arguments:
+            *fd*
+                file descriptor
+
+        :Returns:
+            *success*
+                True if shared lock successfully obtained
+        """
+        fcntl.lockf(fd, fcntl.LOCK_SH)
+
+        return True
+
+    def _exlock(self, fd):
+        """Get exclusive lock on file.
+
+        Using fcntl.lockf, an exclusive lock on the file is obtained. If a
+        shared or exclusive lock is already held on the file by another
+        process, then the method waits until it can obtain the lock.
+
+        :Arguments:
+            *fd*
+                file descriptor
+
+        :Returns:
+            *success*
+                True if exclusive lock successfully obtained
+        """
+        fcntl.lockf(fd, fcntl.LOCK_EX)
+
+        return True
+
+    def _unlock(self, fd):
+        """Remove exclusive or shared lock on file.
+
+        :Arguments:
+            *fd*
+                file descriptor
+
+        :Returns:
+            *success*
+                True if lock removed
+        """
+        fcntl.lockf(fd, fcntl.LOCK_UN)
+
+        return True
+
+    def _open_fd_r(self):
+        """Open read-only file descriptor for application of advisory locks.
+
+        Because we need an active file descriptor to apply advisory locks to a
+        file, and because we need to do this before opening a file with
+        PyTables due to the risk of caching stale state on open, we open
+        a separate file descriptor to the same file and apply the locks
+        to it.
+
+        """
+        self.fd = os.open(self.proxy, os.O_RDONLY)
+
+    def _open_fd_rw(self):
+        """Open read-write file descriptor for application of advisory locks.
+
+        """
+        self.fd = os.open(self.proxy, os.O_RDWR)
+
+    def _close_fd(self):
+        """Close file descriptor used for application of advisory locks.
+
+        """
+        # close file descriptor for locks
+        os.close(self.fd)
+        self.fd = None
+
+    def _open_file_r(self):
+        return open(self.filename, 'r')
+
+    def _open_file_w(self):
+        return open(self.filename, 'w')
+
+    def _read(func):
+        """Decorator for opening state file for reading and applying shared
+        lock.
+
+        Applying this decorator to a method will ensure that the file is opened
+        for reading and that a shared lock is obtained before that method is
+        executed. It also ensures that the lock is removed and the file closed
+        after the method returns.
+
+        """
+        @wraps(func)
+        def inner(self, *args, **kwargs):
+            if self.fdlock:
+                out = func(self, *args, **kwargs)
+            else:
+                self._open_fd_r()
+                self._shlock(self.fd)
+                self.fdlock = 'shared'
+
+                try:
+                    out = func(self, *args, **kwargs)
+                finally:
+                    self._unlock(self.fd)
+                    self._close_fd()
+                    self.fdlock = None
+            return out
+
+        return inner
+
+    def _write(func):
+        """Decorator for opening state file for writing and applying exclusive lock.
+
+        Applying this decorator to a method will ensure that the file is opened
+        for appending and that an exclusive lock is obtained before that method
+        is executed. It also ensures that the lock is removed and the file
+        closed after the method returns.
+
+        """
+        @wraps(func)
+        def inner(self, *args, **kwargs):
+            if self.fdlock == 'exclusive':
+                out = func(self, *args, **kwargs)
+            else:
+                self._open_fd_rw()
+                self._exlock(self.fd)
+                self.fdlock = 'exclusive'
+
+                try:
+                    out = func(self, *args, **kwargs)
+                finally:
+                    self._unlock(self.fd)
+                    self.fdlock = None
+                    self._close_fd()
+            return out
+
+        return inner
+
+    def _pull_push(func):
+        @wraps(func)
+        def inner(self, *args, **kwargs):
+            try:
+                self._pull_record()
+            except IOError:
+                self._init_record()
+            out = func(self, *args, **kwargs)
+            self._push_record()
+            return out
+        return inner
+
+    def _pull(func):
+        @wraps(func)
+        def inner(self, *args, **kwargs):
+            self._pull_record()
+            out = func(self, *args, **kwargs)
+            return out
+        return inner
+
+    def _pull_record(self):
+        self.handle = self._open_file_r()
+        self._record = yaml.load(self.handle)
+        self.handle.close()
+
+    def _push_record(self):
+        self.handle = self._open_file_w()
+        yaml.dump(self._record, self.handle)
+        self.handle.close()
+
+    def _init_record(self):
+        self._record = dict()
+        self._record['resource'] = dict()
+        self._record['jobs'] = dict()
+
+    @_write
+    @_pull_push
+    def populate(self, host, ncore, ngpu):
+        """Build status file elements.
+
+        :Keywords:
+            *host*
+                hostname of node
+            *ncore*
+                total number of cores available to queue
+            *ngpu*
+                total number of gpus available to queue
+        """
+        self._record['resource']['host'] = host
+        self._record['resource']['ncore'] = ncore
+        self._record['resource']['ngpu'] = ngpu
+
+    @_read
+    @_pull
+    def avail():
+        """Get available resources.
+
+        :Returns:
+            *resources*
+                dict giving cores not in use as a list of core numbers and gpus
+                not in use as a list of gpu ids; both lists are 0-based
+
+        """
+        used = dict()
+        used['cores'] = list()
+        used['gpus'] = list()
+
+        avail = dict()
+        avail['cores'] = list()
+        avail['gpus'] = list()
+
+        for jobid in self._record['jobs']:
+            used['cores'].extend(self._record['jobs'][jobid]['cores'])
+            used['gpus'].extend(self._record['jobs'][jobid]['gpus'])
+
+        avail['cores'] = list(set(range(self._record['resource']['ncore'])) -
+                         set(used['cores']))
+        avail['gpus'] = list(set(range(self._record['resource']['ngpu'])) -
+                         set(used['gpus']))
+            
+        return avail
+
+    @_read
+    @_pull
+    def used():
+        """Get resources in use.
+
+        :Returns:
+            *resources*
+                dict giving cores in use as a list of core ids and gpus in
+                use as a list of gpu ids; both lists are 0-based
+
+        """
+        used = dict()
+        used['cores'] = list()
+        used['gpus'] = list()
+
+        avail = dict()
+        avail['cores'] = list()
+        avail['gpus'] = list()
+
+        for jobid in self._record['jobs']:
+            used['cores'].extend(self._record['jobs'][jobid]['cores'])
+            used['gpus'].extend(self._record['jobs'][jobid]['gpus'])
+
+        return used
+
+    @_write
+    @_pull_push
+    def claim(jobid, cores, gpus):
+        """Claim resources for given job.
+
+        :Arguments:
+            *jobid*
+                unique id of job claiming resources
+            *cores*
+                list of core ids to claim
+            *gpus*
+                list of gpu ids to claim
+        """
+        self._record['jobs'][jobid] = dict()
+        self._record['jobs'][jobid]['cores'] = cores
+        self._record['jobs'][jobid]['gpus'] = gpus
+
+    @_write
+    @_pull_push
+    def clear(jobid):
+        """Unclaim resources in use by given job.
+
+        :Arguments:
+            *jobid*
+                unique id of job to unclaim resources for
+        """
+        self._record['jobs'].pop(jobid)
+
+def parse_gmx_mdrun(cores, gpus):
+    """Convert core and gpu ids into inputs for mdrun.
+
+    :Arguments:
+        *cores*
+            list of core ids
+        *gpus*
+            list of gpu ids
+
+    :Returns:
+        *mdrunstring*
+            string specifying pinstride, pinoffset, and gpuids to use
+
+    """
+    params = dict()
+    cores = cores.sort()
+    gpus = gpus.sort()
+
+    for i in range(1, len(cores)/2):
+        if cores == range(cores[0], cores[-1], i):
+            params['-pinoffset'] = cores[0]
+            params['-pinstride'] = i
+            
+    params['-gpu_id'] = "".join([str(x) for x in gpus])
+
+    return " ".join(["{} {}".format(k, v) for k, v in params.iteritems()])
+
+if (__name__ == '__main__'):
+
+    # add subcommands
+
+    # check if file present; if so, read and parse contents, else create it
+    # use a proxy file for applying advisory locks
+
+    # based on resources requested as arguments, as well as resources in use
+    # (read from file), determine which resources to use
+
