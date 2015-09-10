@@ -20,6 +20,7 @@ from functools import wraps
 import os
 import sys
 import re
+import py
 
 class File(object):
     """File object base class. Implements file locking and reloading methods.
@@ -46,6 +47,11 @@ class File(object):
         try:
             fd = os.open(self.proxy, os.O_CREAT | os.O_EXCL)
             os.close(fd)
+            # set permissions if you can
+            try:
+                py.path.local(self.proxy).chmod(0777)
+            except py.error.EPERM:
+                pass
         except OSError:
             pass
 
@@ -122,12 +128,24 @@ class File(object):
         to it.
 
         """
+        # set permissions if you can
+        try:
+            py.path.local(self.proxy).chmod(0777)
+        except py.error.EPERM:
+            pass
+            
         self.fd = os.open(self.proxy, os.O_RDONLY)
 
     def _open_fd_rw(self):
         """Open read-write file descriptor for application of advisory locks.
 
         """
+        # set permissions if you can
+        try:
+            py.path.local(self.proxy).chmod(0777)
+        except py.error.EPERM:
+            pass
+
         self.fd = os.open(self.proxy, os.O_RDWR)
 
     def _close_fd(self):
@@ -139,6 +157,7 @@ class File(object):
         self.fd = None
 
     def _open_file_r(self):
+        # set permissions if you can
         return open(self.filename, 'r')
 
     def _open_file_w(self):
@@ -194,6 +213,12 @@ class File(object):
                 try:
                     out = func(self, *args, **kwargs)
                 finally:
+                    # set permissions if you can
+                    try:
+                        py.path.local(self.filename).chmod(0777)
+                    except py.error.EPERM:
+                        pass
+
                     self._unlock(self.fd)
                     self.fdlock = None
                     self._close_fd()
