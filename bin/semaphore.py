@@ -294,7 +294,7 @@ class File(object):
         for i in range(pinstride, totcores/ncores):
 
             # iterate through possible offsets
-            for j in range(0, totcores - (i * ncores)):
+            for j in range(0, totcores - (i * ncores) + i, i):
                 candidate = range(j, totcores, i)[:ncores]
                 # grab the first candidate set of cores that satisfies
                 # available set
@@ -304,6 +304,9 @@ class File(object):
 
             if cores_claimed:
                 break
+
+        if not cores_claimed:
+            raise ValueError("no core config matching request could be found")
 
         # get gpu configuration
         if (ngpus_avail < ngpus):
