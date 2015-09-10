@@ -1,16 +1,12 @@
 #!/usr/bin/env python
 
-"""Query and modify the current state of the resources available on a host.
+usage = """Query and modify the current state of the resources available on a host.
 
 Subcommands:
-    *populate*
-        set host characteristics
-    *claim*
-        claim resources given
-    *avail*
-        get resources available
-    *used*
-        get resources in use
+    *request*
+        request and claim quantities of each type of resource
+    *gmxify*
+        get job resources as an mdrun input string
     *clear*
         clear resources in use by the given job id
 
@@ -18,13 +14,19 @@ Subcommands:
 import argparse
 import fcntl
 import yaml
+import subprocess
+import socket
+from functools import wraps
+import os
+import sys
+import re
 
 class File(object):
     """File object base class. Implements file locking and reloading methods.
 
     """
 
-    def __init__(self, filename, logger=None, **kwargs):
+    def __init__(self, filename, **kwargs):
         """Create File instance for interacting with file on disk.
 
         :Arguments:
@@ -36,8 +38,6 @@ class File(object):
         self.handle = None
         self.fd = None
         self.fdlock = None
-
-        self._start_logger(logger)
 
         # we apply locks to a proxy file to avoid creating an HDF5 file
         # without an exclusive lock on something; important for multiprocessing
@@ -238,7 +238,7 @@ class File(object):
 
     @_write
     @_pull_push
-    def populate(self, host, ncore, ngpu):
+    def populate(self, host, ncore, totcore, ngpu):
         """Build status file elements.
 
         :Keywords:
@@ -246,71 +246,80 @@ class File(object):
                 hostname of node
             *ncore*
                 total number of cores available to queue
+            *totcore*
+                total number of cores on machine (including hyperthreads)
             *ngpu*
                 total number of gpus available to queue
         """
         self._record['resource']['host'] = host
         self._record['resource']['ncore'] = ncore
+        self._record['resource']['totcore'] = totcore
         self._record['resource']['ngpu'] = ngpu
-
-    @_read
-    @_pull
-    def avail():
-        """Get available resources.
-
-        :Returns:
-            *resources*
-                dict giving cores not in use as a list of core numbers and gpus
-                not in use as a list of gpu ids; both lists are 0-based
-
-        """
-        used = dict()
-        used['cores'] = list()
-        used['gpus'] = list()
-
-        avail = dict()
-        avail['cores'] = list()
-        avail['gpus'] = list()
-
-        for jobid in self._record['jobs']:
-            used['cores'].extend(self._record['jobs'][jobid]['cores'])
-            used['gpus'].extend(self._record['jobs'][jobid]['gpus'])
-
-        avail['cores'] = list(set(range(self._record['resource']['ncore'])) -
-                         set(used['cores']))
-        avail['gpus'] = list(set(range(self._record['resource']['ngpu'])) -
-                         set(used['gpus']))
-            
-        return avail
-
-    @_read
-    @_pull
-    def used():
-        """Get resources in use.
-
-        :Returns:
-            *resources*
-                dict giving cores in use as a list of core ids and gpus in
-                use as a list of gpu ids; both lists are 0-based
-
-        """
-        used = dict()
-        used['cores'] = list()
-        used['gpus'] = list()
-
-        avail = dict()
-        avail['cores'] = list()
-        avail['gpus'] = list()
-
-        for jobid in self._record['jobs']:
-            used['cores'].extend(self._record['jobs'][jobid]['cores'])
-            used['gpus'].extend(self._record['jobs'][jobid]['gpus'])
-
-        return used
 
     @_write
     @_pull_push
-    def claim(jobid, cores, gpus):
+    def request(self, jobid, ncores, ngpus, pinstride=2):
+        """Request a number of resources for given job.
+
+        :Arguments:
+            *jobid*
+                unique id of job claiming resources
+            *ncores*
+                number of ncores desired
+            *ngpus*
+                number of gpus desired
+            *pinstride*
+                minimum pinstride to match
+        """
+        if jobid in self._record['jobs']:
+            raise KeyError("job '{}' already has resources".format(jobid))
+
+        # get resources available
+        avail = self._avail()
+
+        ncores_avail = len(avail['cores'])
+        ngpus_avail = len(avail['gpus'])
+
+        if (ncores_avail < ncores):
+            raise ValueError("not enough cores available")
+
+        # get core configuration
+        totcores = self._record['resource']['totcore']
+
+        # iterate through different pinstrides
+        # can only get pinstrides up to total cores/desired
+        cores_claimed = None
+        for i in range(pinstride, totcores/ncores):
+
+            # iterate through possible offsets
+            for j in range(0, totcores - (i * ncores)):
+                candidate = range(j, totcores, i)
+                # grab the first candidate set of cores that satisfies
+                # available set
+                if set(avail['cores']).issuperset(set(candidate)):
+                    cores_claimed = candidate
+                    break
+
+            if cores_claimed:
+                break
+
+        # get gpu configuration
+        if (ngpus_avail < ngpus):
+            raise ValueError("not enough cores available")
+
+        # take first n gpus available
+        gpus_claimed = avail['gpus'][:ngpus]
+
+        self._claim(jobid, cores_claimed, gpus_claimed)
+
+    def _claim(self, jobid, cores, gpus):
+        self._record['jobs'][jobid] = dict()
+        self._record['jobs'][jobid]['cores'] = cores
+        self._record['jobs'][jobid]['gpus'] = gpus
+
+    @_write
+    @_pull_push
+    def claim(self, jobid, cores, gpus):
         """Claim resources for given job.
 
         :Arguments:
@@ -321,13 +330,58 @@ class File(object):
             *gpus*
                 list of gpu ids to claim
         """
-        self._record['jobs'][jobid] = dict()
-        self._record['jobs'][jobid]['cores'] = cores
-        self._record['jobs'][jobid]['gpus'] = gpus
+        self._claim(jobid, cores, gpus)
 
+    def _used(self): 
+        used = dict()
+        used['cores'] = list()
+        used['gpus'] = list()
+
+        for jobid in self._record['jobs']:
+            used['cores'].extend(self._record['jobs'][jobid]['cores'])
+            used['gpus'].extend(self._record['jobs'][jobid]['gpus'])
+
+        return used
+
+    @_read
+    @_pull
+    def used(self):
+        """Get resources in use.
+
+        :Returns:
+            *resources*
+                dict giving cores in use as a list of core ids and gpus in
+                use as a list of gpu ids; both lists are 0-based
+
+        """
+        return self._used()
+
+    def _avail(self):
+        used = self._used()
+        avail = dict()
+        avail['cores'] = list(set(range(self._record['resource']['ncore'])) -
+                         set(used['cores']))
+        avail['gpus'] = list(set(range(self._record['resource']['ngpu'])) -
+                         set(used['gpus']))
+            
+        return avail
+
+    @_read
+    @_pull
+    def avail(self):
+        """Get available resources.
+
+        :Returns:
+            *resources*
+                dict giving cores not in use as a list of core numbers and gpus
+                not in use as a list of gpu ids; both lists are 0-based
+
+        """
+        return self._avail()
+    
     @_write
     @_pull_push
-    def clear(jobid):
+    def clear(self, jobid):
         """Unclaim resources in use by given job.
 
         :Arguments:
@@ -335,6 +389,22 @@ class File(object):
                 unique id of job to unclaim resources for
         """
         self._record['jobs'].pop(jobid)
+
+    @_write
+    @_pull_push
+    def get(self, jobid):
+        """Get resources in use by given job.
+
+        :Arguments:
+            *jobid*
+                unique id of job to get in-use resources for
+
+        :Returns:
+            *resources*
+                dict giving cores in use as a list of core ids and gpus in
+                use as a list of gpu ids; both lists are 0-based
+        """
+        self._record['jobs']
 
 def parse_gmx_mdrun(cores, gpus):
     """Convert core and gpu ids into inputs for mdrun.
@@ -354,6 +424,7 @@ def parse_gmx_mdrun(cores, gpus):
     cores = cores.sort()
     gpus = gpus.sort()
 
+    # iterate through different pinstrides to match the sequence
     for i in range(1, len(cores)/2):
         if cores == range(cores[0], cores[-1], i):
             params['-pinoffset'] = cores[0]
@@ -363,13 +434,100 @@ def parse_gmx_mdrun(cores, gpus):
 
     return " ".join(["{} {}".format(k, v) for k, v in params.iteritems()])
 
+class Semaphore(object):
+    """Subcommand script interface.
+
+    """
+    def __init__(self):
+        # file handle
+        self.file = File('/scratch/.semaphore.yml')
+
+        parser = argparse.ArgumentParser(
+            description='Query and update semaphore for this host.',
+            usage=usage)
+        parser.add_argument('subcommand', help='subcommand to run')
+        # parse_args defaults to [1:] for args, but we need to
+        # exclude the rest of the args too, or validation will fail
+        args = parser.parse_args(sys.argv[1:2])
+        subcommand = args.subcommand
+        if not hasattr(self, subcommand):
+            print 'unrecognized subcommand {}'.format(subcommand)
+            parser.print_help()
+            exit(1)
+        # use dispatch pattern to invoke method with same name
+        # send output to stdout
+        print getattr(self, subcommand)()
+
+    def _populate(self):
+        """Call before any subcommand that writes to the semaphore."""
+        # get ncores on workstation queue
+        p = subprocess.Popen(('qconf', '-sq', 'workstations.q'),
+                         stderr=subprocess.PIPE,
+                         stdout=subprocess.PIPE)
+        
+        out = p.stdout.readlines()
+        line = [x for x in out if socket.gethostname() in x][0]
+        numcores = int(re.search(r'\[.*([0-9][0-9])\]', line).group(1))
+
+        # get total number of cores on machine
+        p = subprocess.Popen(('qconf', '-se', socket.gethostname()),
+                         stderr=subprocess.PIPE,
+                         stdout=subprocess.PIPE)
+        out = p.stdout.readlines()
+        line = [x for x in out if 'processors' in x][0]
+
+        totcores = int(re.search(r'.*([0-9][0-9]).*', line).group(1))
+
+        # get ngpus
+        p = subprocess.Popen(('qconf', '-se', socket.gethostname()),
+                         stderr=subprocess.PIPE,
+                         stdout=subprocess.PIPE)
+        out = p.stdout.readlines()
+        line = [x for x in out if 'gpu' in x][0]
+
+        numgpu = int(re.search(r'.*([0-9]).*', line).group(1))
+
+        return self.file.populate(socket.gethostname(), ncore=numcores, totcore=totcores, ngpu=numgpu)
+
+    def request(self):
+        self._populate()
+
+        parser = argparse.ArgumentParser(
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            description="""Request quantities of resources from host.""")
+
+        parser.add_argument('--ncores', '-c', default=8, type=int, 
+                help='number of cores to request')
+        parser.add_argument('--ngpus', '-g', default=1, type=int, 
+                help='number of gpus to request')
+        parser.add_argument('jobid', type=str, help='unique id of job')
+
+        args = parser.parse_args(sys.argv[2:])
+        return self.file.request(**vars(args))
+
+    def gmxify(self):
+        parser = argparse.ArgumentParser(
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            description="""Get inputs to gmx mdrun for job resources reserved.""")
+
+        parser.add_argument('jobid', help='unique id of job')
+
+        args = parser.parse_args(sys.argv[2:])
+        used = self.file.get(args.jobid)
+        return parse_gmx_mdrun(used['cores'], used['gpus'])
+
+    def clear(self):
+        self._populate()
+
+        parser = argparse.ArgumentParser(
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            description="""Clear the resource reservation for the given job.""")
+
+        parser.add_argument('jobid', help='unique id of job')
+
+        args = parser.parse_args(sys.argv[2:])
+        self.file.clear(args.jobid)
+
 if (__name__ == '__main__'):
-
-    # add subcommands
-
-    # check if file present; if so, read and parse contents, else create it
-    # use a proxy file for applying advisory locks
-
-    # based on resources requested as arguments, as well as resources in use
-    # (read from file), determine which resources to use
+    Semaphore()
 
