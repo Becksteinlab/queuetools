@@ -488,7 +488,7 @@ class Semaphore(object):
         
         out = p.stdout.readlines()
         line = [x for x in out if socket.gethostname() in x][0]
-        numcores = int(re.search(r'\[.*([0-9][0-9])\]', line).group(1))
+        numcores = int(re.search(r'\[.*=(\d+)\]', line).group(1))
 
         # get total number of cores on machine
         p = subprocess.Popen(('qconf', '-se', socket.gethostname()),
@@ -497,16 +497,21 @@ class Semaphore(object):
         out = p.stdout.readlines()
         line = [x for x in out if 'processors' in x][0]
 
-        totcores = int(re.search(r'.*([0-9][0-9]).*', line).group(1))
+        totcores = int(re.search(r'processors *(\d+)', line).group(1))
 
         # get ngpus
         p = subprocess.Popen(('qconf', '-se', socket.gethostname()),
                          stderr=subprocess.PIPE,
                          stdout=subprocess.PIPE)
         out = p.stdout.readlines()
-        line = [x for x in out if 'gpu' in x][0]
+        line = [x for x in out if 'gpu' in x]
 
-        numgpu = int(re.search(r'.*([0-9]).*', line).group(1))
+        # for cases in which the machine has no gpus
+        if len(line) != 0:
+            line = line[0]
+            numgpu = int(re.search(r'.*gpu=(\d+)', line).group(1))
+        else:
+            numgpu = 0
 
         return self.file.populate(socket.gethostname(), ncore=numcores, totcore=totcores, ngpu=numgpu)
 
@@ -533,6 +538,8 @@ class Semaphore(object):
                 help='number of cores to request')
         parser.add_argument('--ngpus', '-g', default=1, type=int, 
                 help='number of gpus to request')
+        parser.add_argument('--pinstride', '-p', default=2, type=int, 
+                help='minimum pinstride to use')
         parser.add_argument('jobid', type=str, help='unique id of job')
 
         args = parser.parse_args(sys.argv[2:])
