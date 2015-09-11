@@ -575,7 +575,7 @@ class Semaphore(object):
         self._populate()
         self._purge_stale()
 
-        return self.file.request(**vars(args))
+        self.file.request(**vars(args))
 
     def gmxify(self):
         parser = argparse.ArgumentParser(
