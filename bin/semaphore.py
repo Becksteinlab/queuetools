@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+# written by David Dotson <dldotson@asu.edu>, 2015
+# Published under the BSD 3-clause license
 
 usage = """Query and modify the current state of the resources available on a host.
 
