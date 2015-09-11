@@ -505,7 +505,7 @@ class Semaphore(object):
             exit(1)
         # use dispatch pattern to invoke method with same name
         # send output to stdout
-        print getattr(self, subcommand)()
+        getattr(self, subcommand)()
 
     def _populate(self):
         """Call before any subcommand that writes to the semaphore."""
@@ -559,7 +559,7 @@ class Semaphore(object):
 
     def request(self):
         parser = argparse.ArgumentParser(
-            formatter_class=argparse.RawDescriptionHelpFormatter,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             description="""Request quantities of resources from host.""")
 
         parser.add_argument('--ncores', '-c', default=8, type=int, 
@@ -579,17 +579,19 @@ class Semaphore(object):
 
     def gmxify(self):
         parser = argparse.ArgumentParser(
-            formatter_class=argparse.RawDescriptionHelpFormatter,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             description="""Get inputs to gmx mdrun for job resources reserved.""")
 
         parser.add_argument('jobid', help='unique id of job')
 
         args = parser.parse_args(sys.argv[2:])
-        return self.file.parse_gmx_mdrun(args.jobid)
+        out = self.file.parse_gmx_mdrun(args.jobid)
+        print out
+        return out
 
     def clear(self):
         parser = argparse.ArgumentParser(
-            formatter_class=argparse.RawDescriptionHelpFormatter,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             description="""Clear the resource reservation for the given job(s).""")
 
         parser.add_argument('jobid', help='unique id(s) of job(s)', nargs='+')
