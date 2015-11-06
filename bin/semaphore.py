@@ -304,31 +304,25 @@ class File(object):
         # get resources available
         avail = self._avail()
 
-        import pdb
-        pdb.set_trace()
-
         ncores_avail = (len(avail['cores']) -
                        (self._record['resource']['totcore'] -
                         self._record['resource']['ncore']))
         ngpus_avail = len(avail['gpus'])
-
         if (ncores_avail < ncores):
             raise ValueError("not enough cores available")
 
         # get core configuration
         totcores = self._record['resource']['totcore']
-        pdb.set_trace()
 
         # iterate through different pinstrides
         # can only get pinstrides up to total cores/desired
         cores_claimed = None
         for i in range(pinstride, totcores/ncores + 1):
-            pdb.set_trace()
 
             # iterate through possible offsets
             for j in range(0, totcores - (i * ncores) + i, i):
                 candidate = range(j, totcores, i)[:ncores]
-                pdb.set_trace()
+
                 # grab the first candidate set of cores that satisfies
                 # available set
                 if set(avail['cores']).issuperset(set(candidate)):
