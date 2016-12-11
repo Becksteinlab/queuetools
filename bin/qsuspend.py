@@ -2,12 +2,13 @@
 # Written by Oliver Beckstein, 2014
 # Placed into the Public Domain
 
+import sys
 import subprocess
 import socket
 
 DEFAULTS = {'queuename': ["workstations.q", "short.q"],
             'machine': socket.getfqdn(),
-            'time': "21:00",
+            'deltatime': 4,
             }
 
 class GEqueue(object):
@@ -26,7 +27,11 @@ class GEqueue(object):
         rc = subprocess.call(["qmod", "-us", self.name])
         return rc == 0
     def schedule_unsuspend(self, time="21:00"):
-        """Run the 'at' command at *time* to unsuspend the queue."""
+        """Run the 'at' command at *time* to unsuspend the queue.
+        
+        *time* should be a time string understood by at, e.g., 'now +1 h'
+        or 'today 9pm'.
+        """
         cmd = subprocess.Popen(["at",  str(time)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out, err = cmd.communicate("qmod -us {0}".format(self.name))
         return cmd.returncode
@@ -34,10 +39,11 @@ class GEqueue(object):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Suspend the queue on HOSTNAME or MACHINE "
-                                     "for the rest of the day (until TIME) or until you run "
+                                     "until TIME h have passed or until you run "
                                      "qsuspend again. "
                                      "Note that the executing user has to be a Gridengine "
-                                     "admin or the script must be run through 'sudo'.",
+                                     "admin or the script must be run through 'sudo'. "
+                                     "If you cannot run it, talk to a sysadmin.",
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("machine", metavar="MACHINE", nargs="?",
                         default=DEFAULTS['machine'],
@@ -45,14 +51,20 @@ if __name__ == "__main__":
     parser.add_argument("-q", "--queue-name", metavar="QUEUENAME", nargs='*', dest="queuename",
                         default=DEFAULTS['queuename'],
                         help="Name of the Gridengine queue instance.")
-    parser.add_argument("-t", "--time", metavar="TIME", dest="time",
-                        default=DEFAULTS['time'],
-                        help="Suspended queues are automatically unsuspended at this "
-                        "time. Set to 'NEVER' to disable (but please do so only after "
-                        "CAREFUL CONSIDERATION --- in general, you should aim at releasing "
-                        "the queue for general use as soon as possible.") 
+    parser.add_argument("-t", "--time", metavar="TIME", type=float, dest="time",
+                        default=DEFAULTS['deltatime'],
+                        help="Suspended queues are automatically unsuspended after that many hours. "
+                        "The maximum allowed value is 8 (hours).")
 
     args = parser.parse_args()
+
+    # check unsuspend time is reasonable
+    if args.time > 8:
+        print("Maximum suspend time exceeded: set to 8h")
+        args.time = 8.
+    elif args.time < 0:
+        print("ERROR: Suspend time must be >= 0")
+        sys.exit(1)
 
     for queue in args.queuename:
         queuename = queue+"@"+args.machine    
@@ -63,9 +75,9 @@ if __name__ == "__main__":
             success = q.suspend()
             if success:
                 print("Suspended queue {0}".format(queuename))
-                if args.time.upper() != "NEVER":
-                    q.schedule_unsuspend(time=args.time)
-                    print("Will automatically unsuspend the queue at {0}".format(args.time))
+                minutes = int(args.time * 60)
+                q.schedule_unsuspend(time="now + {0} min".format(minutes))
+                print("Will automatically unsuspend the queue after {0} hours".format(args.time))
         else:
             success = q.unsuspend()
             if success:
