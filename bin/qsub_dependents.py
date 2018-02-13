@@ -39,7 +39,9 @@ DEFAULT_QUEUING_SYSTEM = "PBS"
  
 def detect_queuing_system():
     """Heuristic test for GE, PBS, or SLURM"""
-    if distutils.spawn.find_executable("qsub"):
+    if distutils.spawn.find_executable("sbatch"):
+        return "SLURM"
+    elif distutils.spawn.find_executable("qsub"):
         p = subprocess.Popen(['qsub', '--help'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out, err = p.communicate()
         if p.returncode == 2 and '-W additional_attributes' in err:
@@ -48,8 +50,7 @@ def detect_queuing_system():
         out, err = p.communicate()
         if p.returncode == 0 and (out.startswith('GE') or '-hold_jid' in out):
             return "GE"
-    elif distutils.spawn.find_executable("sbatch"):
-        return "SLURM"
+
     return None
  
 def qsub_dependents(args, jobid=None, queuing_system=DEFAULT_QUEUING_SYSTEM):
