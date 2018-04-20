@@ -2,6 +2,8 @@
 # written by David Dotson <dldotson@asu.edu>, 2015
 # Published under the BSD 3-clause license
 
+from __future__ import print_function
+
 usage = """Query and modify the current state of the resources available on a host.
 
 Subcommands:
@@ -51,7 +53,7 @@ class File(object):
             os.close(fd)
             # set permissions if you can
             try:
-                py.path.local(self.proxy).chmod(0777)
+                py.path.local(self.proxy).chmod(0o777)
             except py.error.EPERM:
                 pass
         except OSError:
@@ -132,7 +134,7 @@ class File(object):
         """
         # set permissions if you can
         try:
-            py.path.local(self.proxy).chmod(0777)
+            py.path.local(self.proxy).chmod(0o777)
         except py.error.EPERM:
             pass
             
@@ -144,7 +146,7 @@ class File(object):
         """
         # set permissions if you can
         try:
-            py.path.local(self.proxy).chmod(0777)
+            py.path.local(self.proxy).chmod(0o777)
         except py.error.EPERM:
             pass
 
@@ -217,7 +219,7 @@ class File(object):
                 finally:
                     # set permissions if you can
                     try:
-                        py.path.local(self.filename).chmod(0777)
+                        py.path.local(self.filename).chmod(0o777)
                     except py.error.EPERM:
                         pass
 
@@ -502,7 +504,7 @@ class Semaphore(object):
         args = parser.parse_args(sys.argv[1:2])
         subcommand = args.subcommand
         if not hasattr(self, subcommand):
-            print 'unrecognized subcommand {}'.format(subcommand)
+            print('unrecognized subcommand {}'.format(subcommand))
             parser.print_help()
             exit(1)
         # use dispatch pattern to invoke method with same name
@@ -588,7 +590,7 @@ class Semaphore(object):
 
         args = parser.parse_args(sys.argv[2:])
         out = self.file.parse_gmx_mdrun(args.jobid)
-        print out
+        print(out)
         return out
 
     def clear(self):

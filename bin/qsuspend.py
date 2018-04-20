@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # Written by Oliver Beckstein, 2014
 # Placed into the Public Domain
+from __future__ import print_function
 
 import sys
 import subprocess
