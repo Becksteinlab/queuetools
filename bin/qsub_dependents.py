@@ -45,13 +45,18 @@ def detect_queuing_system():
     if distutils.spawn.find_executable("sbatch"):
         return "SLURM"
     elif distutils.spawn.find_executable("qsub"):
-        p = subprocess.Popen(['qsub', '--help'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p = subprocess.Popen(['qsub', '--help'], 
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out, err = p.communicate()
-        if p.returncode == 2 and '-W additional_attributes' in err:
+        if (p.returncode == 2 and 
+            '-W additional_attributes' in err.decode("utf8")):
             return 'PBS'
-        p = subprocess.Popen(['qsub', '-help'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p = subprocess.Popen(['qsub', '-help'], 
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out, err = p.communicate()
-        if p.returncode == 0 and (out.startswith('GE') or '-hold_jid' in out):
+        if (p.returncode == 0 and 
+                (out.decode("utf8").startswith('GE') or 
+                 '-hold_jid' in out.decode("utf8"))):
             return "GE"
 
     return None
@@ -84,7 +89,7 @@ def qsub(args, queuing_system=DEFAULT_QUEUING_SYSTEM):
     output, errmsg = p.communicate()
     if p.returncode != 0:
         raise OSError(p.returncode, "command %r failed: %s" % (" ".join(cmd), errmsg))
-    return get_jobid(output, queuing_system)
+    return get_jobid(output.decode("utf8"), queuing_system)
  
 def get_jobid(s, queuing_system):
     """Process textual output from qsub to get the job id.
