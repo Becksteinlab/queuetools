@@ -7,7 +7,7 @@ import sys
 import subprocess
 import socket
 
-DEFAULTS = {'queuename': ["workstations.q", "short.q"],
+DEFAULTS = {'queuename': ["workstations.q"],
             'machine': socket.getfqdn(),
             'deltatime': 4,
             }
